@@ -1,0 +1,41 @@
+[package]
+name = "solana-sniper-bot"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-DEX Solana sniper bot — Raydium AMM/CPMM, Orca, Meteora DLMM & DAMMv2"
+
+[[bin]]
+name = "sniper"
+path = "src/main.rs"
+
+[dependencies]
+solana-client             = "2.1"
+solana-sdk                = "2.1"
+solana-transaction-status = "2.1"
+solana-account-decoder    = "2.1"
+
+tokio          = { version = "1", features = ["full"] }
+futures        = "0.3"
+futures-util   = "0.3"
+
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+anyhow         = "1"
+thiserror      = "1"
+dotenv         = "0.15"
+tracing        = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+bs58           = "0.5"
+reqwest        = { version = "0.12", features = ["json"] }
+borsh          = { version = "1", features = ["derive"] }
+sha2           = "0.10"
+uuid           = { version = "1", features = ["v4"] }
+chrono         = "0.4"
+base64         = "0.22"
+bincode        = "1"
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
