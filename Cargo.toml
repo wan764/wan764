@@ -35,14 +35,15 @@ dotenv         = "0.15"
 tracing        = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 bs58           = "0.5"
-reqwest        = { version = "0.12", features = ["json"] }
+reqwest        = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 borsh          = { version = "1", features = ["derive"] }
 sha2           = "0.10"
 uuid           = { version = "1", features = ["v4"] }
 chrono         = "0.4"
 base64         = "0.22"
 bincode        = "1"
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+openssl        = { version = "0.10", features = ["vendored"] }
 
 [profile.release]
 opt-level     = 3
