@@ -104,6 +104,78 @@ impl Executor {
         Ok(sig)
     }
 
+    /// Spam real on-chain buy transactions until min output is achieved or
+    /// max attempts are reached. Uses skip_preflight so every attempt lands
+    /// on-chain even if it later fails on the validator.
+    pub async fn spam_buy(
+        &self,
+        pool: &PoolInfo,
+        handler: &Arc<dyn DexHandler>,
+        keypair: &Keypair,
+    ) -> Result<(String, u64)> {
+        let user        = keypair.pubkey();
+        let amount_in   = self.config.buy_amount_lamports;
+        let spam_count  = self.config.spam_count;
+        let delay_ms    = self.config.spam_delay_ms;
+        let stop_on_ok  = self.config.stop_on_success;
+
+        let min_out_raw = if self.config.min_out_amount > 0.0 {
+            let factor = 10u64.pow(self.config.min_out_decimals as u32) as f64;
+            (self.config.min_out_amount * factor) as u64
+        } else {
+            0
+        };
+
+        let base_mint = if self.config.quote_mints.contains(&pool.quote_mint) {
+            pool.base_mint
+        } else {
+            pool.quote_mint
+        };
+
+        let mut ixs: Vec<Instruction> = vec![
+            ComputeBudgetInstruction::set_compute_unit_price(self.config.compute_unit_price),
+            ComputeBudgetInstruction::set_compute_unit_limit(self.config.compute_unit_limit),
+            create_ata_idempotent_ix(&user, &user, &base_mint),
+        ];
+        let swap_ixs = handler.build_swap_ix(pool, &user, amount_in, min_out_raw, true)?;
+        ixs.extend(swap_ixs);
+        if self.config.use_jito {
+            ixs.push(Self::jito_tip_ix(&user, self.config.jito_tip_lamports));
+        }
+
+        let mut attempt  = 0u32;
+        let mut last_sig = String::new();
+
+        while attempt < spam_count {
+            attempt += 1;
+            crate::gui_event::info(format!("[SPAM] attempt {attempt}/{spam_count}"));
+
+            match self.send_tx_no_preflight(&ixs, keypair).await {
+                Ok(sig) => {
+                    let short = if sig.len() >= 8 { &sig[..8] } else { &sig };
+                    crate::gui_event::success(format!("[SPAM] ✓ sent tx={short}…"));
+                    last_sig = sig.clone();
+                    if stop_on_ok {
+                        return Ok((sig, 0));
+                    }
+                }
+                Err(e) => {
+                    crate::gui_event::warn(format!("[SPAM] ✗ attempt {attempt}: {e}"));
+                }
+            }
+
+            if delay_ms > 0 && attempt < spam_count {
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+
+        if last_sig.is_empty() {
+            Err(BotError::Send(format!("all {spam_count} spam attempts failed")))
+        } else {
+            Ok((last_sig, 0))
+        }
+    }
+
     // ── Internals ─────────────────────────────────────────────
 
     async fn send_transaction(
@@ -130,6 +202,32 @@ impl Executor {
                 .map(|s| s.to_string())
                 .map_err(BotError::Rpc)
         }
+    }
+
+    async fn send_tx_no_preflight(
+        &self,
+        instructions: &[Instruction],
+        keypair: &Keypair,
+    ) -> Result<String> {
+        use solana_client::rpc_config::RpcSendTransactionConfig;
+
+        let blockhash = self.rpc.get_latest_blockhash().await.map_err(BotError::Rpc)?;
+        let message   = Message::new(instructions, Some(&keypair.pubkey()));
+        let mut tx    = Transaction::new_unsigned(message);
+        tx.sign(&[keypair], blockhash);
+
+        self.rpc
+            .send_transaction_with_config(
+                &tx,
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    max_retries:    Some(0),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|s| s.to_string())
+            .map_err(BotError::Rpc)
     }
 
     async fn send_jito_bundle(&self, tx: &Transaction) -> Result<String> {

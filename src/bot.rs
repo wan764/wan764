@@ -124,10 +124,16 @@ pub async fn run_bot(config: Config, bot_tx: std::sync::mpsc::Sender<crate::gui_
                 let kpb                    = wallet.keypair().to_bytes();
                 let sol_in                 = lamports_to_sol(config.buy_amount_lamports);
                 let auto_sell              = config.auto_sell;
+                let spam_enabled           = config.spam_enabled;
 
                 tokio::spawn(async move {
                     let keypair = Keypair::try_from(kpb.as_slice()).expect("keypair");
-                    match executor_clone.buy(&pool, &handler, &keypair).await {
+                    let buy_result = if spam_enabled {
+                        executor_clone.spam_buy(&pool, &handler, &keypair).await
+                    } else {
+                        executor_clone.buy(&pool, &handler, &keypair).await
+                    };
+                    match buy_result {
                         Ok((sig, base_amount)) => {
                             gui::success(format!(
                                 "[BUY] ✓ {:.4} SOL  tx={}…",

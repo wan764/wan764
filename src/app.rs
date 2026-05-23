@@ -66,6 +66,14 @@ pub struct SniperApp {
     stop_loss_x:       f64,
     max_hold_secs:     u64,
 
+    // ─ Spam tx ────────────────────────────────────────────────
+    spam_enabled:      bool,
+    spam_count:        u32,
+    min_out_amount:    f64,
+    min_out_decimals:  u8,
+    spam_delay_ms:     u64,
+    stop_on_success:   bool,
+
     // ─ Runtime state ──────────────────────────────────────────
     bot_running:  bool,
     active_tab:   Tab,
@@ -114,6 +122,12 @@ impl SniperApp {
             take_profit_x:     2.0,
             stop_loss_x:       0.5,
             max_hold_secs:     300,
+            spam_enabled:      false,
+            spam_count:        10,
+            min_out_amount:    0.0,
+            min_out_decimals:  6,
+            spam_delay_ms:     500,
+            stop_on_success:   true,
             bot_running:       false,
             active_tab:        Tab::Feed,
             log:               VecDeque::with_capacity(500),
@@ -161,6 +175,12 @@ impl SniperApp {
             stop_loss_x:            self.stop_loss_x,
             max_hold_secs:          self.max_hold_secs,
             position_check_ms:      5_000,
+            spam_enabled:           self.spam_enabled,
+            spam_count:             self.spam_count,
+            min_out_amount:         self.min_out_amount,
+            min_out_decimals:       self.min_out_decimals,
+            spam_delay_ms:          self.spam_delay_ms,
+            stop_on_success:        self.stop_on_success,
         }
     }
 
@@ -414,6 +434,67 @@ impl SniperApp {
                                     );
                                     ui.end_row();
                                 });
+                        }
+                    });
+
+                ui.add_space(4.0);
+
+                // ─ Spam Tx ──────────────────────────────────
+                egui::CollapsingHeader::new("🔁  Spam Tx")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.checkbox(&mut self.spam_enabled, "Enable Spam Mode");
+                        if self.spam_enabled {
+                            egui::Grid::new("spam_grid")
+                                .num_columns(2)
+                                .spacing([4.0, 6.0])
+                                .show(ui, |ui| {
+                                    ui.label("Max Attempts");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.spam_count)
+                                            .speed(1)
+                                            .range(1u32..=500u32),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label("Min Out Amount");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.min_out_amount)
+                                            .speed(1.0)
+                                            .range(0.0..=1_000_000.0)
+                                            .fixed_decimals(2),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label("Out Decimals");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.min_out_decimals)
+                                            .speed(1)
+                                            .range(0u8..=18u8),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label("Delay");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.spam_delay_ms)
+                                            .speed(50)
+                                            .range(0u64..=5_000u64)
+                                            .suffix(" ms"),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label("");
+                                    ui.checkbox(&mut self.stop_on_success, "Stop on Success");
+                                    ui.end_row();
+                                });
+
+                            ui.label(
+                                egui::RichText::new(
+                                    "⚠ Spam fires real on-chain txs.\nSet Min Out to 0 to skip output check.",
+                                )
+                                .color(egui::Color32::YELLOW)
+                                .small(),
+                            );
                         }
                     });
 
