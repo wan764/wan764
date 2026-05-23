@@ -41,6 +41,14 @@ pub struct Config {
     pub stop_loss_x: f64,
     pub max_hold_secs: u64,
     pub position_check_ms: u64,
+
+    // Spam tx
+    pub spam_enabled: bool,
+    pub spam_count: u32,
+    pub min_out_amount: f64,
+    pub min_out_decimals: u8,
+    pub spam_delay_ms: u64,
+    pub stop_on_success: bool,
 }
 
 impl Config {
@@ -105,6 +113,12 @@ impl Config {
             stop_loss_x: f64_var("STOP_LOSS_X", 0.5),
             max_hold_secs: u64_var("MAX_HOLD_SECS", 300),
             position_check_ms: u64_var("POSITION_CHECK_MS", 5000),
+            spam_enabled: bool_var("SPAM_ENABLED", false),
+            spam_count: u64_var("SPAM_COUNT", 10) as u32,
+            min_out_amount: f64_var("MIN_OUT_AMOUNT", 0.0),
+            min_out_decimals: u64_var("MIN_OUT_DECIMALS", 6) as u8,
+            spam_delay_ms: u64_var("SPAM_DELAY_MS", 500),
+            stop_on_success: bool_var("STOP_ON_SUCCESS", true),
         })
     }
 }
