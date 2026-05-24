@@ -12,18 +12,19 @@ use solana_client::{
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::{EncodedTransaction, UiMessage, UiTransactionEncoding};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::debug;
 
 use crate::{
     config::Config,
     dex::DexHandler,
     error::{BotError, Result},
+    gui_event as gui,
     types::{BotEvent, Dex, PoolInfo},
 };
 
 // ── Public entry point ─────────────────────────────────────────
 
-/// Runs forever, reconnecting on errors.
+/// Runs forever, reconnecting on errors. All status output goes to the GUI.
 pub async fn run_listener(
     dex: Dex,
     handler: Arc<dyn DexHandler>,
@@ -31,11 +32,12 @@ pub async fn run_listener(
     tx: mpsc::Sender<BotEvent>,
 ) {
     loop {
-        info!("{dex} listener starting…");
         match listen_once(dex, handler.clone(), config.clone(), tx.clone()).await {
-            Ok(()) => {}
+            Ok(()) => {
+                gui::warn(format!("[{dex}] WS stream ended — reconnecting…"));
+            }
             Err(e) => {
-                error!("{dex} listener error: {e}. Reconnecting in 3s…");
+                gui::error(format!("[{dex}] WS error: {e} — reconnecting in 3 s…"));
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
@@ -66,37 +68,55 @@ async fn listen_once(
         .await
         .context("logs_subscribe")?;
 
-    info!("{dex} listener connected — watching {}", dex.program_id());
+    gui::success(format!(
+        "[{dex}] ✓ WebSocket connected (watching {}…{})",
+        &dex.program_id().to_string()[..6],
+        &dex.program_id().to_string()[38..],
+    ));
 
     while let Some(response) = stream.next().await {
         let log_resp: RpcLogsResponse = response.value;
 
+        // Skip failed transactions
         if log_resp.err.is_some() {
             continue;
         }
 
+        // Filter to pool-init transactions using the DEX-specific log keyword
         let init_log = handler.pool_init_log();
-        if !log_resp.logs.iter().any(|l| l.contains(init_log)) {
+        let matched = log_resp
+            .logs
+            .iter()
+            .any(|l| l.to_lowercase().contains(&init_log.to_lowercase()));
+
+        if !matched {
             continue;
         }
 
-        debug!("{dex} pool-init tx: {}", log_resp.signature);
+        let sig = log_resp.signature.clone();
+        let sig_short = if sig.len() >= 8 { sig[..8].to_string() } else { sig.clone() };
+        gui::info(format!("[{dex}] 🔍 Pool-init tx detected: {sig_short}…"));
+
+        debug!("{dex} pool-init tx: {sig}");
 
         let handler_clone = handler.clone();
-        let config_clone = config.clone();
-        let tx_clone = tx.clone();
-        let sig = log_resp.signature.clone();
+        let config_clone  = config.clone();
+        let tx_clone      = tx.clone();
 
         tokio::spawn(async move {
             match fetch_and_parse(dex, handler_clone.as_ref(), &config_clone, &sig).await {
                 Ok(pool) => {
-                    info!(
-                        "{} new pool  pool={}  base={}  quote={}  tx={}",
-                        pool.dex, pool.pool, pool.base_mint, pool.quote_mint, pool.tx_signature
-                    );
+                    gui::info(format!(
+                        "[{dex}] 📦 Pool parsed  pool={}…  base={}…  quote={}…",
+                        &pool.pool.to_string()[..8],
+                        &pool.base_mint.to_string()[..8],
+                        &pool.quote_mint.to_string()[..8],
+                    ));
                     let _ = tx_clone.send(BotEvent::NewPool(Box::new(pool))).await;
                 }
-                Err(e) => warn!("{dex} parse failed for {sig}: {e}"),
+                Err(e) => {
+                    gui::warn(format!("[{dex}] Parse failed: {e}"));
+                }
             }
         });
     }

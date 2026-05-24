@@ -30,7 +30,8 @@ impl MeteoraDammv2 {
 
 impl DexHandler for MeteoraDammv2 {
     fn pool_init_log(&self) -> &'static str {
-        "InitializePool"
+        // Anchor: "Program log: Instruction: InitializePool"
+        "Instruction: InitializePool"
     }
 
     fn parse_pool(

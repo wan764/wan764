@@ -40,7 +40,8 @@ impl MeteoraDlmm {
 
 impl DexHandler for MeteoraDlmm {
     fn pool_init_log(&self) -> &'static str {
-        "InitializeLbPair"
+        // Anchor: "Program log: Instruction: InitializeLbPair"
+        "Instruction: InitializeLbPair"
     }
 
     fn parse_pool(

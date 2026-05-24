@@ -20,7 +20,8 @@ pub struct RaydiumAmm;
 
 impl DexHandler for RaydiumAmm {
     fn pool_init_log(&self) -> &'static str {
-        "Initialize"
+        // Raydium AMM V4 is NOT Anchor — it emits `msg!("initialize")` → lowercase
+        "initialize"
     }
 
     fn parse_pool(
@@ -120,7 +121,8 @@ pub struct RaydiumCpmm;
 
 impl DexHandler for RaydiumCpmm {
     fn pool_init_log(&self) -> &'static str {
-        "Initialize"
+        // Anchor program emits "Program log: Instruction: Initialize"
+        "Instruction: Initialize"
     }
 
     fn parse_pool(
