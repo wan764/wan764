@@ -24,9 +24,24 @@ impl Filter {
     }
 
     pub async fn check(&self, pool: &PoolInfo) -> Result<()> {
+        self.check_target_token(pool)?;
         self.check_quote_token(pool)?;
         if self.config.reject_mint_authority || self.config.reject_freeze_authority {
             self.check_token_authority(pool).await?;
+        }
+        Ok(())
+    }
+
+    /// If the user configured a target token, reject every pool that
+    /// does not contain that exact mint on either side.
+    fn check_target_token(&self, pool: &PoolInfo) -> Result<()> {
+        if let Some(target) = &self.config.target_token_mint {
+            if pool.base_mint != *target && pool.quote_mint != *target {
+                return Err(BotError::FilterRejected(format!(
+                    "pool does not contain target token {}",
+                    target
+                )));
+            }
         }
         Ok(())
     }

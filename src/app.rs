@@ -60,6 +60,7 @@ pub struct SniperApp {
     min_liq_sol:       f64,
     reject_mint_auth:  bool,
     reject_freeze_auth: bool,
+    target_token:      String,   // mint address, empty = snipe all pools
 
     auto_sell:         bool,
     take_profit_x:     f64,
@@ -118,6 +119,7 @@ impl SniperApp {
             min_liq_sol:       1.0,
             reject_mint_auth:  true,
             reject_freeze_auth: true,
+            target_token:      String::new(),
             auto_sell:         true,
             take_profit_x:     2.0,
             stop_loss_x:       0.5,
@@ -170,6 +172,14 @@ impl SniperApp {
             ],
             reject_mint_authority:  self.reject_mint_auth,
             reject_freeze_authority: self.reject_freeze_auth,
+            target_token_mint: {
+                let s = self.target_token.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    s.parse().ok()
+                }
+            },
             auto_sell:              self.auto_sell,
             take_profit_x:          self.take_profit_x,
             stop_loss_x:            self.stop_loss_x,
@@ -374,6 +384,74 @@ impl SniperApp {
                         ui.checkbox(&mut self.en_orca,           "Orca Whirlpools");
                         ui.checkbox(&mut self.en_meteora_dlmm,   "Meteora DLMM");
                         ui.checkbox(&mut self.en_meteora_dammv2, "Meteora DAMMv2");
+                    });
+
+                ui.add_space(4.0);
+
+                // ─ Target Token ─────────────────────────────
+                egui::CollapsingHeader::new("🎯  Target Token")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("Only snipe pools containing this token.\nLeave empty to snipe ALL new pools (⚠ drains SOL fast).")
+                                .small()
+                                .color(egui::Color32::from_rgb(180, 180, 180)),
+                        );
+                        ui.add_space(4.0);
+
+                        let valid = self.target_token.trim().is_empty()
+                            || self.target_token.trim().parse::<solana_sdk::pubkey::Pubkey>().is_ok();
+
+                        let hint_color = if valid {
+                            egui::Color32::from_rgb(100, 200, 100)
+                        } else {
+                            egui::Color32::from_rgb(230, 80, 80)
+                        };
+
+                        ui.horizontal(|ui| {
+                            let te = egui::TextEdit::singleline(&mut self.target_token)
+                                .hint_text("Token mint address (Base58)…")
+                                .desired_width(220.0)
+                                .text_color(if valid {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(255, 120, 120)
+                                });
+                            ui.add(te);
+                            if !self.target_token.is_empty() {
+                                if ui.small_button("✕").clicked() {
+                                    self.target_token.clear();
+                                }
+                            }
+                        });
+
+                        if self.target_token.trim().is_empty() {
+                            ui.label(
+                                egui::RichText::new("⚠  No target set — bot will buy every new pool!")
+                                    .color(egui::Color32::YELLOW)
+                                    .small(),
+                            );
+                        } else if valid {
+                            let short = {
+                                let s = self.target_token.trim();
+                                if s.len() >= 12 {
+                                    format!("{}…{}", &s[..6], &s[s.len()-4..])
+                                } else {
+                                    s.to_string()
+                                }
+                            };
+                            ui.label(
+                                egui::RichText::new(format!("✓  Targeting: {short}"))
+                                    .color(hint_color)
+                                    .small(),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("✗  Invalid address")
+                                    .color(egui::Color32::from_rgb(230, 80, 80))
+                                    .small(),
+                            );
+                        }
                     });
 
                 ui.add_space(4.0);

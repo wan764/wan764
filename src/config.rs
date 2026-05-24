@@ -34,6 +34,9 @@ pub struct Config {
     pub quote_mints: Vec<Pubkey>,
     pub reject_mint_authority: bool,
     pub reject_freeze_authority: bool,
+    /// If set, only snipe pools that contain this exact token mint.
+    /// Leave as None to snipe every pool that passes other filters.
+    pub target_token_mint: Option<Pubkey>,
 
     // Auto-sell
     pub auto_sell: bool,
@@ -108,6 +111,10 @@ impl Config {
             quote_mints,
             reject_mint_authority: bool_var("REJECT_MINT_AUTHORITY", true),
             reject_freeze_authority: bool_var("REJECT_FREEZE_AUTHORITY", true),
+            target_token_mint: std::env::var("TARGET_TOKEN_MINT")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .and_then(|s| Pubkey::from_str(s.trim()).ok()),
             auto_sell: bool_var("AUTO_SELL", true),
             take_profit_x: f64_var("TAKE_PROFIT_X", 2.0),
             stop_loss_x: f64_var("STOP_LOSS_X", 0.5),
