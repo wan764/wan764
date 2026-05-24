@@ -60,6 +60,12 @@ pub async fn run_bot(config: Config, bot_tx: std::sync::mpsc::Sender<crate::gui_
     let dex_names: Vec<String> = active.iter().map(|(d, _)| d.to_string()).collect();
     gui::success(format!("Monitoring: {}", dex_names.join(", ")));
 
+    // Show what we are targeting
+    match &config.target_token_mint {
+        Some(mint) => gui::success(format!("🎯 Target token: {mint}")),
+        None => gui::warn("⚠ No target token set — bot will buy EVERY new pool!"),
+    }
+
     // ── Channels ──────────────────────────────────────────────
     let (pool_tx, mut pool_rx) = async_mpsc::channel::<BotEvent>(256);
 
