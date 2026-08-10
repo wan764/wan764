@@ -1,7 +1,11 @@
 //! WebSocket log subscriber — detects new pool-creation transactions on every
 //! enabled DEX and forwards them over an mpsc channel.
 
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    time::Duration,
+};
 
 use futures_util::StreamExt;
 use solana_client::{
@@ -11,7 +15,7 @@ use solana_client::{
 };
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use solana_transaction_status::{EncodedTransaction, UiMessage, UiTransactionEncoding};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tracing::debug;
 
 use crate::{
@@ -22,7 +26,7 @@ use crate::{
     types::{BotEvent, Dex, PoolInfo},
 };
 
-// ── Public entry point ─────────────────────────────────────────
+// ── Public entry point ───────────────────────────────────────────────
 
 /// Runs forever, reconnecting on errors. All status output goes to the GUI.
 pub async fn run_listener(
@@ -31,26 +35,31 @@ pub async fn run_listener(
     config: Arc<Config>,
     tx: mpsc::Sender<BotEvent>,
 ) {
+    // Shared dedup set — prevents processing the same signature twice
+    // (Solana WS sometimes delivers duplicate notifications)
+    let seen: Arc<TokioMutex<HashSet<String>>> = Arc::new(TokioMutex::new(HashSet::new()));
+
     loop {
-        match listen_once(dex, handler.clone(), config.clone(), tx.clone()).await {
+        match listen_once(dex, handler.clone(), config.clone(), tx.clone(), seen.clone()).await {
             Ok(()) => {
                 gui::warn(format!("[{dex}] WS stream ended — reconnecting…"));
             }
             Err(e) => {
                 gui::error(format!("[{dex}] WS error: {e} — reconnecting in 3 s…"));
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
     }
 }
 
-// ── Internal ────────────────────────────────────────────────────
+// ── Internal ────────────────────────────────────────────────────────
 
 async fn listen_once(
     dex: Dex,
     handler: Arc<dyn DexHandler>,
     config: Arc<Config>,
     tx: mpsc::Sender<BotEvent>,
+    seen: Arc<TokioMutex<HashSet<String>>>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
 
@@ -69,7 +78,7 @@ async fn listen_once(
         .context("logs_subscribe")?;
 
     gui::success(format!(
-        "[{dex}] ✓ WebSocket connected (watching {}…{})",
+        "[{dex}] ✓ WebSocket connected ({}…{})",
         &dex.program_id().to_string()[..6],
         &dex.program_id().to_string()[38..],
     ));
@@ -82,29 +91,37 @@ async fn listen_once(
             continue;
         }
 
-        // Filter to pool-init transactions using the DEX-specific log keyword
-        let init_log = handler.pool_init_log();
-        let matched = log_resp
-            .logs
-            .iter()
-            .any(|l| l.to_lowercase().contains(&init_log.to_lowercase()));
-
-        if !matched {
+        // Filter to pool-init transactions only (case-insensitive)
+        let init_kw = handler.pool_init_log().to_lowercase();
+        if !log_resp.logs.iter().any(|l| l.to_lowercase().contains(&init_kw)) {
             continue;
         }
 
         let sig = log_resp.signature.clone();
-        let sig_short = if sig.len() >= 8 { sig[..8].to_string() } else { sig.clone() };
-        gui::info(format!("[{dex}] 🔍 Pool-init tx detected: {sig_short}…"));
 
-        debug!("{dex} pool-init tx: {sig}");
+        // ── Deduplication ───────────────────────────────────────────
+        {
+            let mut guard = seen.lock().await;
+            if guard.contains(&sig) {
+                debug!("[{dex}] duplicate sig skipped: {sig}");
+                continue;
+            }
+            guard.insert(sig.clone());
+            // Keep memory bounded — clear when set grows large
+            if guard.len() > 2_000 {
+                guard.clear();
+            }
+        }
+
+        let sig_short = if sig.len() >= 8 { sig[..8].to_string() } else { sig.clone() };
+        gui::info(format!("[{dex}] 🔍 Pool-init tx: {sig_short}…"));
 
         let handler_clone = handler.clone();
         let config_clone  = config.clone();
         let tx_clone      = tx.clone();
 
         tokio::spawn(async move {
-            match fetch_and_parse(dex, handler_clone.as_ref(), &config_clone, &sig).await {
+            match fetch_and_parse_with_retry(dex, handler_clone.as_ref(), &config_clone, &sig).await {
                 Ok(pool) => {
                     gui::info(format!(
                         "[{dex}] 📦 Pool parsed  pool={}…  base={}…  quote={}…",
@@ -115,7 +132,7 @@ async fn listen_once(
                     let _ = tx_clone.send(BotEvent::NewPool(Box::new(pool))).await;
                 }
                 Err(e) => {
-                    gui::warn(format!("[{dex}] Parse failed: {e}"));
+                    gui::warn(format!("[{dex}] ✗ Parse failed ({sig_short}…): {e}"));
                 }
             }
         });
@@ -124,8 +141,9 @@ async fn listen_once(
     Ok(())
 }
 
-/// Fetch the confirmed transaction and extract pool info.
-async fn fetch_and_parse(
+/// Fetch + parse with up to 6 retries (initial 800 ms delay, then 500 ms each).
+/// The RPC often doesn't have the tx indexed yet at the moment the WS fires.
+async fn fetch_and_parse_with_retry(
     dex: Dex,
     handler: &dyn DexHandler,
     config: &Config,
@@ -140,16 +158,32 @@ async fn fetch_and_parse(
         .parse()
         .map_err(|e| BotError::Parse(format!("bad signature: {e}")))?;
 
-    let tx_with_meta = rpc
-        .get_transaction(&sig, UiTransactionEncoding::Json)
-        .await
-        .map_err(BotError::Rpc)?;
+    // Wait a moment before the first attempt — tx needs time to be indexed
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let program_id = dex.program_id();
-    let (account_keys, ix_accounts) =
-        parse_encoded_tx(tx_with_meta.transaction.transaction, &program_id)?;
+    const MAX_ATTEMPTS: u32 = 6;
+    let mut last_err = BotError::Parse("no attempts made".to_string());
 
-    handler.parse_pool(&account_keys, &ix_accounts, signature)
+    for attempt in 1..=MAX_ATTEMPTS {
+        match rpc.get_transaction(&sig, UiTransactionEncoding::Json).await {
+            Ok(tx_with_meta) => {
+                let program_id = dex.program_id();
+                let (account_keys, ix_accounts) =
+                    parse_encoded_tx(tx_with_meta.transaction.transaction, &program_id)?;
+                return handler.parse_pool(&account_keys, &ix_accounts, signature);
+            }
+            Err(e) => {
+                last_err = BotError::Rpc(e);
+                if attempt < MAX_ATTEMPTS {
+                    // Exponential-ish back-off: 500 ms, 700 ms, 900 ms …
+                    let wait_ms = 500 + (attempt - 1) as u64 * 200;
+                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err)
 }
 
 /// Parse account keys and find the DEX instruction's account-index list in one pass.
@@ -161,7 +195,7 @@ fn parse_encoded_tx(
         EncodedTransaction::Json(t) => t,
         _ => {
             return Err(BotError::Parse(
-                "unsupported tx encoding (use UiTransactionEncoding::Json)".to_string(),
+                "unsupported encoding (expected Json)".to_string(),
             ))
         }
     };
@@ -175,14 +209,12 @@ fn parse_encoded_tx(
         }
     };
 
-    // Parse the flat account-key list
     let account_keys: Vec<Pubkey> = raw_msg
         .account_keys
         .iter()
         .map(|k| k.parse::<Pubkey>().map_err(|e| BotError::Parse(e.to_string())))
         .collect::<Result<Vec<_>>>()?;
 
-    // Find the first instruction belonging to our DEX program
     let ix_accounts = raw_msg
         .instructions
         .iter()
@@ -193,7 +225,7 @@ fn parse_encoded_tx(
         })
         .map(|ix| ix.accounts.clone())
         .ok_or_else(|| {
-            BotError::Parse(format!("no instruction found for program {program_id}"))
+            BotError::Parse(format!("no instruction for program {program_id}"))
         })?;
 
     Ok((account_keys, ix_accounts))
